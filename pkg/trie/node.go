@@ -1,6 +1,6 @@
 package trie
 
-import "polyer/pkg/vpack"
+import "github.com/anbien/polyer/pkg/vpack"
 
 type PTrieNode struct {
 	key []byte
@@ -20,9 +20,9 @@ func (pn *PTrieNode) SetKey(key []byte) {
 }
 
 // 将value存储到结点中
-func (pn *PTrieNode) Add(vType uint64, value uint64) {
+func (pn *PTrieNode) Add(tag uint32, value uint64) {
 	if pn.vPack == nil {
-		pn.vPack = vpack.NewValuePack(vType, 0)
+		pn.vPack = vpack.NewValuePack(tag, 0)
 	}
 
 	pn.vPack.Add(value)

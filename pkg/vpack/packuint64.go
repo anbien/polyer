@@ -9,8 +9,8 @@ import (
 type PackUint64 uint64
 
 type VPack struct {
-	vType uint64
-	data  []PackUint64
+	tag  uint32
+	data []PackUint64
 }
 
 const (
@@ -19,12 +19,12 @@ const (
 	BlockBitNum    = 64 - ValueBitNum
 )
 
-func NewValuePack(vType uint64, capacity uint32) *VPack {
+func NewValuePack(tag uint32, capacity uint32) *VPack {
 	if capacity == 0 {
 		capacity = DefaultCapcity
 	}
 
-	return &VPack{vType: vType, data: make([]PackUint64, 0, capacity)}
+	return &VPack{tag: tag, data: make([]PackUint64, 0, capacity)}
 }
 
 func (vp VPack) Size() int {
@@ -139,8 +139,8 @@ func (vp *VPack) Merge(vp1 *VPack) {
 		return
 	}
 
-	if vp.vType == 0 {
-		vp.vType = vp1.vType
+	if vp.tag == 0 {
+		vp.tag = vp1.tag
 	}
 
 	vp.data = merge(vp.data, vp1.data)
@@ -152,11 +152,11 @@ func Merge(vp1, vp2 *VPack) (*VPack, error) {
 		return nil, errors.New("Unsupprt merge nil vpack")
 	}
 
-	if vp1.vType != 0 && vp2.vType != 0 && vp1.vType != vp2.vType {
+	if vp1.tag != 0 && vp2.tag != 0 && vp1.tag != vp2.tag {
 		return nil, errors.New("Unsupport merge two different vpack")
 	}
 
-	newPack := NewValuePack(vp1.vType, uint32(len(vp1.data)+len(vp2.data)))
+	newPack := NewValuePack(vp1.tag, uint32(len(vp1.data)+len(vp2.data)))
 	if len(vp1.data) == 0 {
 		newPack.data = append(newPack.data, vp2.data...)
 	} else if len(vp2.data) == 0 {

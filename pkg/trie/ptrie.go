@@ -2,8 +2,10 @@ package trie
 
 import (
 	"errors"
+	"log"
 	"math"
-	"polyer/pkg/vpack"
+
+	"github.com/anbien/polyer/pkg/vpack"
 )
 
 type PTrie struct {
@@ -11,47 +13,43 @@ type PTrie struct {
 }
 
 func NewTrie() *PTrie {
-	return &PTrie{}
+	trie := &PTrie{}
+	trie.root.next = NewTrieChunk()
+	return trie
 }
 
-func (pt *PTrie) Put(key []byte, vType uint64, value uint64) error {
+func (pt *PTrie) Put(key []byte, tag uint32, value uint64) error {
 	// 找到 value 插入的位置
-	// 1. 如果offset >= 0，说明找到了具体的插入节点(offset指向的节点), chunk/parent都不为空
+	// 1. 如果offset >= 0，说明找到了具体的插入节点(offset指向的节点), chunk都不为空
 	//    1.1 如果 remainKey 不为空，则需要分裂插入节点(offset指向的节点)
 	//    1.2 如果 remainKey 为空，则直接value加入到插入节点(offset指向的节点)
-	// 2. 如果offset < 0, 说明找到了插入位置， 需要新建节点插入到该位置, parent不为空，chunk 可能存在或不存在
-	//    2.1 如果chunk不存在，则新建chunk，然后新建节点加入到chunk
-	//    2.2 如果chunk存在，然后新建节点加入到chunk
-	parent, chunk, offset, remainKey := pt.location(key)
-	if parent == nil {
-		return errors.New("未找到可插入的位置")
+	// 2. 如果offset < 0, 说明需要新建节点插入到该位置
+	//    2.1 新建节点加入到chunk
+	chunk, offset, remainKey := pt.location2(key)
+	if chunk == nil {
+		return errors.New("the trie is error")
 	}
 
 	if offset >= 0 {
 		node := chunk.nodes[offset]
-		if len(remainKey) == 0 {
+		if remainKey == nil {
 			// 将之插入到node中
-			node.Add(vType, value)
-		} else { // 需要进行分裂处理
-			commOffset := node.PrefixOffset(remainKey)
-			splitChunk := splitNode(node, commOffset)
+			node.Add(tag, value)
+			return nil
+		}
 
-			newNode := NewPTrieNode()
-			newNode.SetKey(remainKey[commOffset+1:])
-			newNode.Add(vType, value)
-			splitChunk.AddNode(newNode)
-		}
-	} else {
-		if chunk == nil {
-			chunk = NewTrieChunk()
-			parent.next = chunk
-			chunk.parent = parent
-			offset = -1
-		}
+		// 需要进行分裂处理
+		prefixOffset := node.PrefixOffset(remainKey)
+		splitChunk := splitNode(node, prefixOffset)
 
 		newNode := NewPTrieNode()
+		newNode.SetKey(remainKey[prefixOffset+1:])
+		newNode.Add(tag, value)
+		splitChunk.AddNode(newNode)
+	} else {
+		newNode := NewPTrieNode()
 		newNode.SetKey(remainKey)
-		newNode.Add(vType, value)
+		newNode.Add(tag, value)
 
 		index := int(math.Abs(float64(offset)) - 1)
 		chunk.InsertNode(index, newNode)
@@ -59,15 +57,35 @@ func (pt *PTrie) Put(key []byte, vType uint64, value uint64) error {
 	return nil
 }
 
+// Get 根据key查找
 func (pt *PTrie) Get(key []byte) []uint64 {
-	parent, chunk, offset, remainKey := pt.location(key)
-	if parent == nil || offset < 0 || chunk == nil || len(remainKey) > 0 {
-		return []uint64{}
+	chunk, offset, remainKey := pt.location2(key)
+	if remainKey != nil || offset < 0 || chunk == nil {
+		return nil
 	}
 
 	node := chunk.nodes[offset]
 
 	return node.vPack.Unpack()
+}
+
+// RangeQuery 根据key范围查找
+func (pt *PTrie) RangeQuery(start, end []byte) ([]uint64, error) {
+	ret := compare(start, end)
+	if ret > 0 {
+		return nil, errors.New("不是合法的范围")
+	}
+
+	if ret == 0 {
+		return pt.Get(start), nil
+	}
+
+	// 先找左边界
+	leftBound := pt.LeftBound(start)
+
+	rightBound := pt.RightBound(end)
+
+	return pt.rangeQuery(leftBound, rightBound), nil
 }
 
 func compare(start, end []byte) int {
@@ -122,54 +140,41 @@ func recordRangeNode(chunk *PTrieChunk, start, end int, pack *vpack.VPack) {
 	}
 }
 
-func (pt *PTrie) RangeQuery(start, end []byte) ([]uint64, error) {
-	// 确保阐述的是范围
-	ret := compare(start, end)
-	if ret > 0 {
-		return nil, errors.New("不是合法的范围")
-	}
-
-	if ret == 0 {
-		return pt.Get(start), nil
-	}
-
-	// 先找左边界
-	leftBound := pt.LeftBound(start)
-	rightBound := pt.RightBound(end)
-
-	return pt.rangeQuery(leftBound, rightBound), nil
-}
-
 func (pt *PTrie) rangeQuery(left, right []*BoundNode) []uint64 {
 	newPack := &vpack.VPack{}
 
-	var i = 0
+	var depth = 0
 
-	for ; i < len(left) && i < len(right); i++ {
-		lNode := left[i]
-		rNode := right[i]
+	for ; depth < len(left) && depth < len(right); depth++ {
+		lNode := left[depth]
+		rNode := right[depth]
 
+		// 检查是否分叉了
 		if lNode.chunk != rNode.chunk {
 			break
 		}
 
 		// 记录左节点
 		recordBoundNode(lNode.chunk, lNode.offset, newPack)
+		if lNode.offset == rNode.offset {
+			continue
+		}
 
-		if lNode.offset != rNode.offset {
-			// 记录右节点
-			recordBoundNode(rNode.chunk, rNode.offset, newPack)
-			// 记录中间节点
-			if lNode.offset+1 <= rNode.offset-1 {
-				recordRangeNode(lNode.chunk, lNode.offset+1, rNode.offset-1, newPack)
-			}
+		// 记录右节点
+		recordBoundNode(rNode.chunk, rNode.offset, newPack)
+
+		// 记录中间节点
+		if lNode.offset+1 <= rNode.offset-1 {
+			recordRangeNode(lNode.chunk, lNode.offset+1, rNode.offset-1, newPack)
 		}
 	}
 
-	if i < len(left) {
-		for _, lNode := range left[i:] {
+	// 左分叉遍历
+	if depth < len(left) {
+		for _, lNode := range left[depth:] {
 			// 记录左节点
 			recordBoundNode(lNode.chunk, lNode.offset, newPack)
+
 			// 记录中间节点
 			if lNode.offset+1 <= len(lNode.chunk.nodes)-1 {
 				recordRangeNode(lNode.chunk, lNode.offset+1, len(lNode.chunk.nodes)-1, newPack)
@@ -177,12 +182,13 @@ func (pt *PTrie) rangeQuery(left, right []*BoundNode) []uint64 {
 		}
 	}
 
-	if i < len(right) {
-		for _, rNode := range right[i:] {
+	// 有分叉遍历
+	if depth < len(right) {
+		for _, rNode := range right[depth:] {
 			// 记录右节点
 			recordBoundNode(rNode.chunk, rNode.offset, newPack)
 			// 记录中间节点
-			if rNode.offset-1 >= 0 {
+			if rNode.offset >= 1 {
 				recordRangeNode(rNode.chunk, 0, rNode.offset-1, newPack)
 			}
 		}
@@ -404,18 +410,52 @@ func (pt *PTrie) location(key []byte) (*PTrieNode, *PTrieChunk, int, []byte) {
 		}
 
 		currNode := chunk.nodes[offset]
-		commOffset := currNode.PrefixOffset(remainKey)
-		if len(currNode.key) > commOffset+1 {
+		prefixOffset := currNode.PrefixOffset(remainKey)
+		if len(currNode.key) > prefixOffset+1 {
 			return parent, chunk, offset, remainKey
 		}
 
-		remainKey = remainKey[commOffset+1:]
+		remainKey = remainKey[prefixOffset+1:]
+
+		// 找到精确的节点
 		if len(remainKey) == 0 {
-			return parent, chunk, offset, remainKey
+			return parent, chunk, offset, nil
 		}
+
 		parent = currNode
 		chunk = currNode.next
 	}
 
+	// 理论上不应该出现这种场景
+	log.Println("error tree , need check the bug")
 	return parent, nil, -1, remainKey
+}
+
+func (pt *PTrie) location2(key []byte) (*PTrieChunk, int, []byte) {
+	chunk := pt.root.next
+
+	remainKey := key
+	for chunk != nil {
+		offset := chunk.location(remainKey)
+		if offset < 0 {
+			return chunk, offset, remainKey
+		}
+
+		currNode := chunk.nodes[offset]
+		prefixOffset := currNode.PrefixOffset(remainKey)
+		if len(currNode.key) > prefixOffset+1 {
+			return chunk, offset, remainKey
+		}
+
+		remainKey = remainKey[prefixOffset+1:]
+
+		// 找到精确的节点
+		if len(remainKey) == 0 {
+			return chunk, offset, nil
+		}
+
+		chunk = currNode.next
+	}
+
+	return chunk, -1, remainKey
 }
